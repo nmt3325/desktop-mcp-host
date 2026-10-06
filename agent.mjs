@@ -95,6 +95,7 @@ function parseRole() {
 for (const sig of ["SIGINT", "SIGTERM"]) {
 	process.on(sig, () => {
 		run.stopping = true
+		run.stopReason = sig === "SIGINT" ? "user" : "terminated"
 		abortActiveRequests()
 	})
 }
