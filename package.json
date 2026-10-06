@@ -1,0 +1,31 @@
+{
+  "name": "@nmt3325/desktop-mcp-host",
+  "version": "0.1.0",
+  "description": "Stateless MCP broker and lightweight foreground agent for controlling your own computers",
+  "type": "module",
+  "bin": {
+    "desktop-mcp-host": "./cli.mjs"
+  },
+  "files": [
+    "cli.mjs",
+    "agent.mjs",
+    "lib/",
+    "vendor/",
+    "third_party/",
+    "VENDOR.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nmt3325/desktop-mcp-host.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nmt3325/desktop-mcp-host/issues"
+  },
+  "homepage": "https://github.com/nmt3325/desktop-mcp-host#readme"
+}

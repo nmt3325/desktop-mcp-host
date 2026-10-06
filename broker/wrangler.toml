@@ -1,0 +1,35 @@
+name = "desktop-mcp"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# MCP and the broker are co-hosted in one Worker. Persistent local agents keep
+# outbound long-polls to this endpoint; deploys may drop those polls and agents
+# reconnect automatically.
+
+[vars]
+DEFAULT_TTL_MINUTES = "60"
+MAX_TTL_MINUTES = "330"
+AGENT_WAIT_SECONDS = "50"
+EXEC_WORKERS = "4"
+UNREACHABLE_LIMIT_SECONDS = "600"
+MAX_OUTPUT_BYTES = "268435456"
+
+[[durable_objects.bindings]]
+name = "ENV_DO"
+class_name = "EnvDO"
+
+[[durable_objects.bindings]]
+name = "GUARD_DO"
+class_name = "GuardDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["EnvDO", "GuardDO"]
+
+[observability]
+enabled = true
+
+# Secrets:
+#   BROKER_SECRET   shared secret used by persistent agents for signed enrollment
+#   MCP_AUTH_TOKEN  bearer token for POST /mcp

@@ -1,0 +1,276 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # libuv#1490: two threads calling uv_spawn can inherit each other's
+      # handles. That issue is closed for us only because this process is
+      # single-threaded, so the justification expires the moment a thread
+      # appears. Fail the build instead of silently voiding the argument.
+      - name: the agent must stay single-threaded
+        run: |
+          if grep -RnE 'worker_threads|new Worker\(' agent.mjs lib vendor | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)'; then
+            echo "::error::worker_threads is banned in the runner agent (libuv#1490)"
+            exit 1
+          fi
+          echo "ok: no worker_threads"
+
+      # fs.watch is unreliable on macOS and Windows and needs the libuv
+      # threadpool. Growth is detected with synchronous fstat.
+      - name: fs.watch is banned
+        run: |
+          if grep -RnE 'fs\.watch|watchFile' agent.mjs lib vendor | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)'; then
+            echo "::error::fs.watch/watchFile are banned; poll fstat instead"
+            exit 1
+          fi
+          echo "ok: no fs.watch"
+
+      # A second output file with its own offsets is what made cursors
+      # non-idempotent, which in turn made a retry after MCP error -32001 skip
+      # output. There is one out.raw and the cursor is a raw byte offset.
+      - name: there is exactly one output file
+        run: |
+          if grep -RnE 'out\.strip|out\.[0-9]+\.raw' agent.mjs lib; then
+            echo "::error::the stripped/rotated output files are gone for a reason"
+            exit 1
+          fi
+          echo "ok: single out.raw"
+
+      # Pipes in the output path are the original sin this project exists to
+      # avoid: Node cannot tune a child's stdout high-water mark, so a chatty
+      # child on a pipe stalls the agent. The child gets file descriptors.
+      - name: no pipes in the command output path
+        run: |
+          if grep -nE 'stdio: *\[[^]]*"pipe"' lib/exec.mjs; then
+            echo "::error::commands must inherit file descriptors, never pipes"
+            exit 1
+          fi
+          echo "ok: no pipes for command stdio"
+
+      # Apache-2.0 4(a) needs the licence text itself, and 4(b)/4(c) are
+      # satisfied by the vendored file rather than by VENDOR.md. If a refactor
+      # reformats the header away, the obligation silently breaks.
+      - name: third-party attribution is intact
+        run: |
+          test -f third_party/gemini-cli/LICENSE
+          test -f third_party/actions-runner/LICENSE
+          test -f third_party/write-file-atomic/LICENSE
+          grep -q 'Apache License' third_party/gemini-cli/LICENSE
+          grep -q 'MIT License' third_party/actions-runner/LICENSE
+          grep -q 'Copyright (c) 2015, Rebecca Turner' third_party/write-file-atomic/LICENSE
+          grep -q 'SPDX-License-Identifier: Apache-2.0' vendor/process-utils.mjs
+          grep -q 'NOTICE OF MODIFICATION' vendor/process-utils.mjs
+          grep -q 'Copyright 2025 Google LLC' vendor/process-utils.mjs
+          grep -q 'SPDX-License-Identifier: ISC' lib/vendor/write-file-atomic.mjs
+          grep -q 'NOTICE OF MODIFICATION' lib/vendor/write-file-atomic.mjs
+          grep -q 'npm/write-file-atomic' lib/vendor/write-file-atomic.mjs
+          echo "ok: attribution intact"
+
+      # There is no build step, so a typo would otherwise only show up on a live
+      # runner several minutes into a workflow.
+      - name: syntax check every module
+        run: |
+          for f in agent.mjs lib/*.mjs lib/vendor/*.mjs vendor/*.mjs; do
+            node --check "$f" || exit 1
+          done
+          echo "ok: all modules parse"
+
+      - name: modules import cleanly
+        run: |
+          node --input-type=module -e "
+            await Promise.all([
+              import('./lib/config.mjs'),
+              import('./lib/util.mjs'),
+              import('./lib/clock.mjs'),
+              import('./lib/state.mjs'),
+              import('./lib/broker.mjs'),
+              import('./lib/shell.mjs'),
+              import('./lib/exec.mjs'),
+              import('./lib/fileop.mjs'),
+              import('./lib/worker.mjs'),
+              import('./lib/control.mjs'),
+              import('./lib/vendor/write-file-atomic.mjs'),
+              import('./vendor/process-utils.mjs'),
+            ]);
+            console.log('ok: all modules import');
+          "
+
+      # The tail clock is the one piece of arithmetic that can be wrong in a way
+      # nothing else notices, so check its boundaries directly.
+      - name: tail clock stays inside its bounds
+        run: |
+          node --input-type=module -e "
+            const { makeTailClock, POLL_MIN_MS, POLL_MAX_MS } = await import('./lib/clock.mjs');
+            const c = makeTailClock(4);
+            const idle = c.next(0, 60 * 1024 ** 3);
+            if (idle !== POLL_MAX_MS) throw new Error('idle should relax to the ceiling, got ' + idle);
+            let ms = 0;
+            for (let i = 0; i < 20; i++) ms = c.next(i * 512 * 1024 ** 2, 64 * 1024 ** 2);
+            if (ms < POLL_MIN_MS || ms > POLL_MAX_MS) throw new Error('out of bounds: ' + ms);
+            if (ms !== POLL_MIN_MS) throw new Error('a fast writer on a nearly full disk must hit the floor, got ' + ms);
+            console.log('ok: idle=' + idle + 'ms, saturated=' + ms + 'ms');
+          "
+
+      # The pwsh epilogue is the fix for the previous system's worst symptom, so
+      # verify the generated script actually still contains it, byte for byte.
+      - name: the actions/runner pwsh epilogue survives script generation
+        run: |
+          node --input-type=module -e "
+            const { pwshScript } = await import('./lib/shell.mjs');
+            const s = pwshScript('exit 3', { cwd: 'C:\\\\w', overlay: 'C:\\\\o.env', rc: 'C:\\\\rc', cwdOut: 'C:\\\\cwd' });
+            const want = 'if ((Test-Path -LiteralPath variable:\\\\LASTEXITCODE)) { exit \$LASTEXITCODE }';
+            if (!s.includes(want)) throw new Error('missing actions/runner epilogue');
+            if (!s.trimEnd().endsWith(want)) throw new Error('epilogue must be the last statement');
+            if (!s.startsWith(\"\$ErrorActionPreference = 'stop'\")) throw new Error('missing actions/runner prologue');
+            if (!s.includes('\$OutputEncoding')) throw new Error('\$OutputEncoding must be pinned too');
+            if (/[^-]2>&1/.test(s)) throw new Error('shell-level stream merging is banned');
+            console.log('ok: prologue, epilogue and encoding intact');
+          "
+
+      # --- file primitives (M2) -------------------------------------------
+      # These gates are scoped to the edit path on purpose. The same patterns
+      # are fine elsewhere in the repo; they are dangerous specifically where
+      # user file content is being matched and rewritten.
+
+      # String#replace treats $&, $1 and $` in the REPLACEMENT as references.
+      # A user's new_str containing $& would then interpolate the match.
+      - name: the edit path never uses String#replace
+        run: |
+          if grep -nE '\.replace(All)?\(' lib/fileop.mjs lib/vendor/*.mjs; then
+            echo "::error::use indexOf + slice; String#replace expands \$& in the replacement"
+            exit 1
+          fi
+          echo "ok: literal replacement only"
+
+      # existsSync is a TOCTOU probe: the answer is stale before it returns.
+      # Open with wx / act and handle the errno instead.
+      - name: no existence probes before acting
+        run: |
+          if grep -nE 'existsSync' lib/fileop.mjs lib/vendor/*.mjs; then
+            echo "::error::existsSync is TOCTOU; use wx + EEXIST or stat and handle ENOENT"
+            exit 1
+          fi
+          echo "ok: no existsSync"
+
+      # err.message carries absolute paths and localised Windows text, which the
+      # model then pattern-matches on. Only our own typed strings go out.
+      - name: raw errno text never reaches the caller
+        run: |
+          if grep -nE 'message: *`?\$?\{?err\.message|String\(err\.message' lib/fileop.mjs; then
+            echo "::error::do not forward err.message; map the errno to a typed code"
+            exit 1
+          fi
+          echo "ok: no raw errno text in results"
+
+      # A decode that silently substitutes U+FFFD would let an edit destroy the
+      # bytes it could not represent. The round-trip is the whole guarantee.
+      - name: text is only edited after a byte round-trip
+        run: |
+          grep -q 'Buffer.compare(' lib/fileop.mjs || {
+            echo "::error::decodeStrict must verify the utf-8 round-trip with Buffer.compare"
+            exit 1
+          }
+          grep -q 'fatal: true' lib/fileop.mjs || {
+            echo "::error::the TextDecoder must be fatal"
+            exit 1
+          }
+          echo "ok: strict utf-8 with a round-trip check"
+
+      # A near miss that edits the wrong line is worse than a failure.
+      - name: no fuzzy matching in the edit path
+        run: |
+          if grep -HniE 'levenshtein|fuzzy|similarity|damerau' lib/fileop.mjs | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)'; then
+            echo "::error::matching is exact and literal by design"
+            exit 1
+          fi
+          echo "ok: exact matching only"
+
+      # The rename is the commit point and it belongs to the vendored writer.
+      # fileop must commit through it instead of growing a second, unreviewed
+      # commit path of its own.
+      - name: the file primitives never rename by hand
+        run: |
+          if grep -n 'renameSync' lib/fileop.mjs; then
+            echo "::error::fileop must commit through writeAtomic/renameWithRetry"
+            exit 1
+          fi
+          grep -q 'export function renameWithRetry' lib/vendor/write-file-atomic.mjs
+          echo "ok: one commit point"
+
+      # `finally` cannot win against SIGKILL, so zero orphaned temp files is
+      # only an invariant if something re-establishes it.
+      - name: orphaned temp files are swept, not just sweepable
+        run: |
+          grep -q 'export function sweepOrphanTmp' lib/vendor/write-file-atomic.mjs
+          grep -q 'sweepOrphanTmp(' lib/fileop.mjs || {
+            echo "::error::sweepOrphanTmp is defined but never called"
+            exit 1
+          }
+          echo "ok: orphan sweep is wired in"
+
+  unit:
+    # The file primitives are the one part of this agent whose behaviour differs
+    # per OS (rename over an open file, chmod, path case), so they are tested on
+    # all three rather than on ubuntu with a promise.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: node --test
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          node --test \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=junit --test-reporter-destination=artifacts/report.xml \
+            test/*.test.mjs
+
+      # A skipped test is not a passing test. Windows legitimately skips the
+      # POSIX mode assertions, so the gate runs where nothing should skip.
+      - name: skipped is not green
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const xml = fs.readFileSync("artifacts/report.xml", "utf8");
+            const head = xml.match(/<testsuites[^>]*>/);
+            if (!head) throw new Error("no <testsuites> element in the junit report");
+            const skipped = /skipped="(\d+)"/.exec(head[0]);
+            if (skipped && Number(skipped[1]) > 0) throw new Error("skipped tests are not green: " + skipped[1]);
+            console.log("ok: " + head[0]);
+          '
+
+      - name: keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-${{ matrix.os }}
+          path: artifacts/report.xml
+          if-no-files-found: warn
