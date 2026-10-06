@@ -1,5 +1,4 @@
 import { z } from "zod"
-import type { BrokerConfig, Platform } from "./config"
 
 /*
  * Tool input schemas.
@@ -18,67 +17,19 @@ import type { BrokerConfig, Platform } from "./config"
 export const ENV_ID_RE = /^(linux|mac|win)-[0-9a-hjkmnp-tv-z]{8}$/
 
 const ENV_ID_HELP =
-	"Environment id returned by env_create, shaped like linux-a1b2c3d4, mac-a1b2c3d4 or win-a1b2c3d4. Call env_list if you do not have one."
+	"Host id shown by env_list, shaped like linux-a1b2c3d4, mac-a1b2c3d4 or win-a1b2c3d4."
 
 export const EnvIdField = z.string().regex(ENV_ID_RE, ENV_ID_HELP).describe(ENV_ID_HELP)
-
-export const PlatformSchema = z.enum(["linux", "macos", "windows"])
-
-/** Fails typecheck if config gains a platform this enum does not list. */
-type PlatformsCovered = Exclude<Platform, z.infer<typeof PlatformSchema>> extends never ? true : never
-const platformsCovered: PlatformsCovered = true
-void platformsCovered
-
-/* ------------------------------------------------------------------- env_* */
-
-export function envCreateInput(cfg: BrokerConfig) {
-	return z.strictObject({
-		platform: PlatformSchema.describe("linux | macos | windows"),
-		ttl_minutes: z
-			.number()
-			.optional()
-			.describe(
-				`Lease length in minutes. Default ${cfg.defaultTtlMinutes}, clamped to ${cfg.maxTtlMinutes} because GitHub kills any job at 6 hours.`,
-			),
-		label: z.string().optional().describe("Short human label, shown in env_list."),
-		wait: z
-			.boolean()
-			.optional()
-			.describe(
-				"Wait for the runner to enroll before returning. Still returns within ~45s whether or not it became ready.",
-			),
-	})
-}
-
-export function envExtendInput(cfg: BrokerConfig) {
-	return z.strictObject({
-		env_id: EnvIdField,
-		minutes: z
-			.number()
-			.describe(
-				`Minutes to ADD to the lease it has now. This never shortens a lease, and it is clamped so the lease stays within ${cfg.maxTtlMinutes} minutes of when the environment was created.`,
-			),
-	})
-}
 
 export const EnvStatusInput = z.strictObject({
 	env_id: EnvIdField,
 	verbose: z
 		.boolean()
 		.optional()
-		.describe("Include runner facts: node version, cpu count, memory, available shells, base64 recipes."),
-	wait_ready_ms: z
-		.number()
-		.optional()
-		.describe("Block until the state leaves 'provisioning'. Clamped to 45000. Use this right after env_create."),
+		.describe("Include host facts: node version, cpu count, memory, available shells, base64 recipes."),
 })
 
 export const EnvListInput = z.strictObject({})
-
-export const EnvDestroyInput = z.strictObject({
-	env_id: EnvIdField,
-	force: z.boolean().optional().describe("Destroy even if another session created it."),
-})
 
 /* ---------------------------------------------------------------- commands */
 
@@ -104,7 +55,7 @@ const EnvField = z
 const TimeoutField = z
 	.number()
 	.optional()
-	.describe("Kill the command after this many seconds. Default 3600, and further clamped to the remaining lease.")
+	.describe("Kill the command after this many seconds. Default 3600, clamped to 21600.")
 
 const AllowDuplicateField = z
 	.boolean()
@@ -188,8 +139,7 @@ export const StopJobInput = z.strictObject({
 const PathField = z.string().min(1).max(4096).describe("Absolute path, or relative to the sticky cwd.")
 
 export const ReadFileInput = z.strictObject({
-	env_id: EnvIdField.optional(),
-	deviceId: EnvIdField.optional().describe("Desktop Commander-compatible device id. Optional when exactly one device is online."),
+	env_id: EnvIdField,
 	path: PathField,
 	offset: z.number().optional().describe("First line to return, 0-based. A negative offset reads the tail."),
 	limit: z.number().optional().describe("How many lines to return. Default 2000."),
@@ -199,8 +149,7 @@ export const ReadFileInput = z.strictObject({
 })
 
 export const WriteFileInput = z.strictObject({
-	env_id: EnvIdField.optional(),
-	deviceId: EnvIdField.optional().describe("Desktop Commander-compatible device id. Optional when exactly one device is online."),
+	env_id: EnvIdField,
 	path: PathField,
 	content: z
 		.string()
@@ -216,22 +165,19 @@ export const WriteFileInput = z.strictObject({
 })
 
 export const ListDirectoryInput = z.strictObject({
-	env_id: EnvIdField.optional(),
-	deviceId: EnvIdField.optional().describe("Desktop Commander-compatible device id. Optional when exactly one device is online."),
+	env_id: EnvIdField,
 	path: PathField,
 	deadline_ms: z.number().optional().describe("How long to wait for the runner. Default 20000, max 45000."),
 })
 
 export const GetImageInput = z.strictObject({
-	env_id: EnvIdField.optional(),
-	deviceId: EnvIdField.optional().describe("Desktop Commander-compatible device id. Optional when exactly one device is online."),
+	env_id: EnvIdField,
 	path: PathField,
 	deadline_ms: z.number().optional().describe("How long to wait for the runner. Default 30000, max 45000."),
 })
 
 export const GetFileInput = z.strictObject({
-	env_id: EnvIdField.optional(),
-	deviceId: EnvIdField.optional().describe("Desktop Commander-compatible device id. Optional when exactly one device is online."),
+	env_id: EnvIdField,
 	path: PathField,
 	file_name: z
 		.string()
@@ -249,10 +195,7 @@ export const GetFileInput = z.strictObject({
 	deadline_ms: z.number().optional().describe("How long to wait for the runner. Default 30000, max 45000."),
 })
 
-export type EnvCreateArgs = z.infer<ReturnType<typeof envCreateInput>>
-export type EnvExtendArgs = z.infer<ReturnType<typeof envExtendInput>>
 export type EnvStatusArgs = z.infer<typeof EnvStatusInput>
-export type EnvDestroyArgs = z.infer<typeof EnvDestroyInput>
 export type ExecuteArgs = z.infer<typeof ExecuteInput>
 export type StartCommandArgs = z.infer<typeof StartCommandInput>
 export type PollJobArgs = z.infer<typeof PollJobInput>

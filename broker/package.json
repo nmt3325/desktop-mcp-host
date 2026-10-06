@@ -1,9 +1,9 @@
 {
 	"name": "desktop-mcp-broker",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"private": true,
 	"type": "module",
-	"description": "Stateless MCP broker for persistent local Linux, macOS and Windows computer agents",
+	"description": "Stateless MCP broker for local Linux, macOS and Windows host agents",
 	"engines": {
 		"node": ">=20"
 	},

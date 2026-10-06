@@ -1,80 +1,42 @@
 # desktop-mcp broker
 
-This directory contains the stateless MCP broker used by persistent local
-computer agents.
+Stateless MCP frontend and durable job broker for local host agents.
 
-Architecture:
+The broker never creates hosts. A host appears when an npx agent enrolls and
+keeps an outbound long-poll connection open.
 
-    MCP client -> POST /mcp -> broker -> device/job Durable Objects
-                                   ^
-                                   |
-                        outbound local agent
+## MCP tools
 
-The broker does not provision compute. Linux, macOS and Windows computers
-register themselves by running the repository-root agent.mjs.
+Host discovery:
+- env_list
+- env_status
 
-## MCP design
+Execution:
+- execute
+- without_sandbox
+- start_command
+- poll_job
+- stop_job
 
-The MCP frontend is intentionally stateless. A short-lived MCP server is built
-for each request, and request completion closes it. Long-lived state such as
-registered computers, command queues and output metadata is stored separately in
-Durable Objects (Cloudflare) or SQLite (self-hosted).
+Files:
+- read_file
+- write_file
+- list_directory
+- get_image
+- get_file
 
-This means clients that repeatedly initialize MCP, including clients that do not
-send DELETE on shutdown, cannot exhaust a broker-side MCP session map.
+There are no host lifecycle or lease tools.
+
+## State model
+
+MCP transport is stateless. Durable state belongs to hosts and jobs, not MCP
+sessions. Command output can be resumed by byte offset after client timeouts.
+
+Hosts have no TTL. Online/offline status is based on the latest agent heartbeat.
 
 ## Authentication
 
-Two independent credentials are used:
+MCP clients use MCP_AUTH_TOKEN.
 
-- MCP_AUTH_TOKEN: bearer token accepted only by POST /mcp.
-- BROKER_SECRET: shared with local agents and used to sign enrollment.
-
-An agent token minted after enrollment is accepted only by /agent/<device>/*.
-The credential lanes do not cross-accept.
-
-## Tools
-
-Desktop Commander-style tools:
-
-- list_devices
-- who_am_i
-- ping
-- get_config
-- start_process
-- read_process_output
-- force_terminate
-- list_sessions
-- read_file / write_file / list_directory
-
-Native broker tools remain available for robust resumable jobs:
-
-- env_list / env_status
-- execute / start_command / poll_job / stop_job
-- get_image / get_file
-
-env_create is retained as a migration-compatible name but no longer provisions
-anything. Start a local agent instead.
-
-## Development
-
-    npm install
-    npm run typecheck
-    npm test
-
-Self-hosted Node/SQLite validation:
-
-    cd selfhost
-    npm ci
-    npm run build
-    npm test
-
-The self-hosted E2E test covers persistent enrollment/re-enrollment,
-list_devices, Desktop Commander-style start_process/read_process_output,
-broker restart recovery and device removal.
-
-## Deployment
-
-For a Node/SQLite deployment see ../SELF_HOSTING.md and
-../LOCAL_AGENT.md. Cloudflare Worker deployment remains supported through
-wrangler.toml, but GitHub Actions runners are not part of the runtime.
+Host agents use BROKER_SECRET only for the signed enrollment request, then use a
+per-host agent token for control, queue polling and output upload.

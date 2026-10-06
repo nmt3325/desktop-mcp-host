@@ -106,9 +106,8 @@ export async function startServer(input = process.env) {
       if (agent) {
         let id
         try { id = decodeURIComponent(agent[1]) } catch { return reply(res, 400, "invalid environment id") }
-        // A persistent local agent must be able to create its own record on
-        // first hello. Every other route still rejects unknown ids without
-        // opening/creating storage for them.
+        // A local host agent may create its own record on first hello. Every
+        // other route still rejects unknown ids without opening storage.
         if (!ENV_ID.test(id) || (agent[2] !== "hello" && !env.ENV_DO.hasName(id))) {
           return reply(res, 404, "unknown environment")
         }

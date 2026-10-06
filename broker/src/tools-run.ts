@@ -4,12 +4,9 @@
  * THERE IS NO SANDBOX HERE, and that is a decision rather than an omission.
  * local-mcp confines a command with Landlock on Linux and Seatbelt on macOS,
  * and offers without_sandbox for the cases where that confinement gets in the
- * way. In this system the unit of isolation sits one level up: an environment
- * IS a throwaway GitHub Actions VM, holding nothing of ours, destroyed with the
- * job. A second, weaker boundary inside it would buy no safety and would mostly
- * produce commands that fail for reasons the caller cannot see -- so execute
- * runs the command unconfined, and without_sandbox is registered as a plain
- * alias of execute so a client written against local-mcp keeps working.
+ * way. desktop-mcp-host intentionally controls the selected local host directly,
+ * so execute runs unconfined. without_sandbox remains a plain alias of execute
+ * to preserve the original gha-mcp tool surface.
  *
  * What IS kept from the lane this replaces, because it is what makes the tools
  * usable from an MCP client at all:
@@ -87,16 +84,16 @@ export async function ensureReady(stub: any, envId: string): Promise<Ready> {
 			ok: false,
 			payload: fail("enroll_race", "the runner has not enrolled yet", {
 				retry_after_ms: 3000,
-				next_action: `env_status(env_id: "${envId}", wait_ready_ms: 45000)`,
+				next_action: `env_status(env_id: "${envId}")`,
 			}),
 		}
 	}
 	if (snap.state !== "ready") {
 		return {
 			ok: false,
-			payload: fail(snap.state === "expired" ? "env_expired" : "env_not_found", `environment is ${snap.state}`, {
+			payload: fail("env_not_found", `host is ${snap.state}`, {
 				extra: { failure_reason: snap.failure_reason ?? null },
-				next_action: "env_create",
+				next_action: "env_list",
 			}),
 		}
 	}
@@ -128,15 +125,7 @@ async function enqueueCommand(
 	const snap = ready.snap
 	const warnings: string[] = [...((snap.warnings as string[]) || [])]
 
-	let timeoutS = clamp(numArg(a.timeoutSRaw, 3600), 1, 21600)
-	const ttlRemaining = Number(snap.ttl_remaining_s || 0)
-	if (timeoutS > ttlRemaining - 30) {
-		const clamped = Math.max(1, ttlRemaining - 30)
-		warnings.push(
-			`timeout_s clamped from ${timeoutS}s to ${clamped}s because the lease has ${ttlRemaining}s left; call env_extend if the job needs longer`,
-		)
-		timeoutS = clamped
-	}
+	const timeoutS = clamp(numArg(a.timeoutSRaw, 3600), 1, 21600)
 
 	const jobId = crypto.randomUUID().replace(/-/g, "").slice(0, 16)
 	const idemHash = a.allowDuplicate ? `nodedupe:${jobId}` : await sha256Hex(a.idemSeed)
@@ -173,7 +162,7 @@ async function enqueueCommand(
 				`the runner already has ${enq.queue_depth} jobs queued (max ${enq.max_queue})`,
 				{
 					retry_after_ms: 2000,
-					hint: "being busy is not an error; wait for one to finish or create a second environment",
+					hint: "being busy is not an error; wait for one to finish",
 					next_action: "poll_job on an earlier job_id",
 				},
 			),
@@ -344,7 +333,7 @@ export function buildRunTools(env: Bindings, cfg: BrokerConfig): ToolDef[] {
 	const EXECUTE_DESCRIPTION =
 		"Run a command in the environment and wait for it, but only for wait_ms (default 30s) -- after that you get a job_id and resume with poll_job, so a 40-minute build is normal rather than a timeout. " +
 		"command is an argv array and there is NO shell in between: for pipes, redirection, globs or $VAR, run the shell yourself with [\"bash\", \"-lc\", \"...\"]. " +
-		"The command runs UNCONFINED -- no filesystem or network sandbox -- because the environment is already a disposable VM that is destroyed with the job. " +
+		"The command runs UNCONFINED -- no additional filesystem or network sandbox is applied by this broker. " +
 		"output is stdout and stderr interleaved into one stream, as the command wrote it, with ANSI escapes stripped and addressed by byte offset. " +
 		"A non-zero exit_code is returned as data, not raised as an error. cwd persists between calls in the same environment. " +
 		"For binary output, use get_file to return the original file, or get_image when the client should inspect an image."
@@ -456,7 +445,7 @@ export function buildRunTools(env: Bindings, cfg: BrokerConfig): ToolDef[] {
 		title: "Start a command in the background",
 		description:
 			"Start a command and return a job_id immediately, without waiting for any output. Use this for servers, watchers and builds you intend to check on later; use execute when you want the result. " +
-			"Same argv rules and the same unconfined execution as execute. Read it with poll_job, stop it with stop_job -- and note that nothing else will: the process keeps running until it exits, is stopped, or the environment's lease ends.",
+			"Same argv rules and the same unconfined execution as execute. Read it with poll_job and stop it with stop_job; otherwise the process keeps running until it exits or reaches timeout_s.",
 		inputSchema: StartCommandInput,
 		async handler(args: StartCommandArgs, ctx) {
 			const envId = args.env_id

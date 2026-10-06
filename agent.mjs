@@ -2,9 +2,9 @@
 /*
  * desktop-mcp runner agent.
  *
- *   node agent.mjs --role=control    enroll, hold the /control long-poll, own the
- *                                    TTL lease, spawn exec workers, and be the
- *                                    only process that kills a tree
+ *   node agent.mjs --role=control    enroll, hold the /control long-poll, spawn
+ *                                    exec workers, and be the only process that
+ *                                    kills a tree
  *   node agent.mjs --role=exec       hold the /next long-poll, run one command
  *                                    at a time
  *

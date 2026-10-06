@@ -19,7 +19,7 @@ export type { WindowResult } from "./env-window"
  * The single exception is the tail persisted when a command finishes, because a
  * finished command's exit code must not outlive the output that explains it.
  */
-const PULL_TTL_MS = 90_000
+const PULL_CACHE_MAX_AGE_MS = 90_000
 const CLAIM_REDELIVER_MS = 30_000
 
 /**
@@ -109,27 +109,9 @@ export class EnvDO extends DurableObject {
 		return mnum(this.sql, k, d)
 	}
 
-	/* ------------------------------------------------------------ lifecycle */
+	/* ------------------------------------------------------------ host registration */
 
-	async provision(input: {
-		envId: string
-		platform: string
-		ttlMinutes: number
-		label: string | null
-		createdBy: string | null
-	}): Promise<void> {
-		this.init()
-		this.mset("env_id", input.envId)
-		this.mset("platform", input.platform)
-		this.mset("state", "provisioning")
-		this.mset("label", input.label)
-		this.mset("created_by", input.createdBy)
-		this.mset("created_at", Date.now())
-		this.mset("ttl_expires_at", Date.now() + input.ttlMinutes * 60_000)
-		this.mset("overlay_version", 0)
-	}
-
-	async provisionPersistent(input: {
+	async provisionHost(input: {
 		envId: string
 		platform: string
 		label: string | null
@@ -138,59 +120,21 @@ export class EnvDO extends DurableObject {
 		const first = !this.mget("env_id")
 		this.mset("env_id", input.envId)
 		this.mset("platform", input.platform)
-		this.mset("persistent", 1)
 		this.mset("state", "provisioning")
 		this.mset("label", input.label)
 		if (first) this.mset("created_at", Date.now())
-		this.mset("ttl_expires_at", Number.MAX_SAFE_INTEGER)
 		if (this.mget("overlay_version") === null) this.mset("overlay_version", 0)
 	}
 
-	async setDispatch(d: { runId: string | null; runAttempt: string | null; runUrl: string | null }) {
-		if (d.runId) this.mset("run_id", d.runId)
-		if (d.runAttempt) this.mset("run_attempt", d.runAttempt)
-		if (d.runUrl) this.mset("run_url", d.runUrl)
-	}
-
-	/**
-	 * One-shot enroll. The real security property is not the HMAC (which only
-	 * proves possession of a repo secret every job already has) but that this can
-	 * succeed exactly once per env, while state is still `provisioning`, and only
-	 * for the (run_id, run_attempt) pair we saved from the dispatch response.
-	 *
-	 * A mismatch is never a silent 401: the env is marked `failed` with the reason
-	 * recorded, so the caller sees why instead of watching it hang in provisioning.
-	 */
 	async enroll(claim: {
-		runId: string
-		runAttempt: string
 		facts: Record<string, unknown>
 		execWorkers: number
-		unreachableLimitSeconds: number
 		redact: string[]
-		persistent?: boolean
 	}): Promise<
-		| { ok: true; agent_token: string; ttl_expires_at: number; exec_workers: number; unreachable_limit_s: number; redact: string[]; persistent: boolean }
+		| { ok: true; agent_token: string; exec_workers: number; redact: string[] }
 		| { ok: false; reason: string }
 	> {
 		this.init()
-		const persistent = Boolean(claim.persistent || this.mget("persistent") === "1")
-		const state = this.mget("state")
-		if (!persistent && state !== "provisioning") {
-			return { ok: false, reason: `enroll rejected: env state is ${state}, expected provisioning (enroll is one-shot)` }
-		}
-		const expectRun = this.mget("run_id")
-		const expectAttempt = this.mget("run_attempt")
-		if (!persistent && expectRun && expectRun !== claim.runId) {
-			this.mset("state", "failed")
-			this.mset("failure_reason", `run_id mismatch: dispatch recorded ${expectRun}, caller claimed ${claim.runId}`)
-			return { ok: false, reason: "run_id mismatch" }
-		}
-		if (!persistent && expectAttempt && expectAttempt !== claim.runAttempt) {
-			this.mset("state", "failed")
-			this.mset("failure_reason", `run_attempt mismatch: expected ${expectAttempt}, got ${claim.runAttempt}`)
-			return { ok: false, reason: "run_attempt mismatch" }
-		}
 		const shellProblem = missingShell(this.mget("platform") || "", claim.facts)
 		if (shellProblem) {
 			this.mset("state", "failed")
@@ -198,31 +142,21 @@ export class EnvDO extends DurableObject {
 			return { ok: false, reason: shellProblem }
 		}
 
-		// No expiry is embedded in the token. It is validated against
-		// ttl_expires_at on every request, so env_extend takes effect immediately
-		// and "401 right after a successful extend" cannot happen.
+		// Re-enrollment replaces the previous token. The host is usable while its
+		// foreground agent is connected.
 		const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "")
 		this.mset("agent_token", token)
-		this.mset("persistent", persistent ? 1 : null)
 		this.mset("state", "ready")
-		this.mset("run_id", claim.runId)
-		this.mset("run_attempt", claim.runAttempt)
 		this.mset("last_seen_at", Date.now())
 		this.mset("facts", JSON.stringify(claim.facts))
-		if (typeof claim.facts.run_url === "string") this.mset("run_url", claim.facts.run_url)
 		if (typeof claim.facts.work_dir === "string" && !this.mget("sticky_cwd")) {
 			this.mset("sticky_cwd", claim.facts.work_dir)
 		}
 		return {
 			ok: true,
 			agent_token: token,
-			ttl_expires_at: persistent
-				? Number.MAX_SAFE_INTEGER
-				: this.mnum("ttl_expires_at", Date.now() + 3_600_000)!,
 			exec_workers: claim.execWorkers,
-			unreachable_limit_s: claim.unreachableLimitSeconds,
 			redact: claim.redact,
-			persistent,
 		}
 	}
 
@@ -249,62 +183,7 @@ export class EnvDO extends DurableObject {
 	async authAgent(token: string): Promise<{ ok: boolean; reason?: string; status?: number }> {
 		const expected = this.mget("agent_token")
 		if (!expected || token !== expected) return { ok: false, reason: "bad agent token", status: 401 }
-		const state = this.mget("state")
-		if (state === "destroying" || state === "expired") return { ok: false, reason: `env ${state}`, status: 410 }
-		if (this.mget("persistent") === "1") return { ok: true }
-		const ttl = this.mnum("ttl_expires_at", 0)!
-		if (Date.now() > ttl) {
-			this.mset("state", "expired")
-			return { ok: false, reason: "lease expired", status: 410 }
-		}
 		return { ok: true }
-	}
-
-	/**
-	 * Extend, and only ever extend.
-	 *
-	 * `minutes` is ADDED to the lease the environment already has. Measuring from
-	 * now instead looks identical for an env that is nearly up and silently
-	 * SHORTENS every other one: env_extend(minutes: 15) against a lease with 39
-	 * minutes left used to leave it with 15, which is the opposite of what the
-	 * caller asked for and cost them the environment. A lease that has already
-	 * lapsed extends from now, because extending from a point in the past would
-	 * be a no-op. The hard cap is still measured from creation, since GitHub kills
-	 * the job at 6 hours no matter what this row says, and if the cap lands before
-	 * where the lease already was we keep the later of the two.
-	 */
-	async extend(minutes: number, maxTtlMinutes: number): Promise<{ ttl_expires_at: number; warnings: string[] }> {
-		const warnings: string[] = []
-		const now = Date.now()
-		const createdAt = this.mnum("created_at", now)!
-		const hardCap = createdAt + maxTtlMinutes * 60_000
-		const current = this.mnum("ttl_expires_at", now)!
-		let next = Math.max(current, now) + minutes * 60_000
-		if (next > hardCap) {
-			warnings.push(
-				`ttl clamped to ${maxTtlMinutes} minutes from creation (GitHub kills the job at 6h regardless)`,
-			)
-			next = hardCap
-		}
-		if (next < current) {
-			warnings.push(
-				`this environment is already at its ${maxTtlMinutes}-minute ceiling, so the lease is unchanged`,
-			)
-			next = current
-		}
-		this.mset("ttl_expires_at", next)
-		return { ttl_expires_at: next, warnings }
-	}
-
-	async markDestroying(): Promise<{ run_id: string | null }> {
-		this.mset("state", "destroying")
-		this.actions.push({ type: "destroy" })
-		return { run_id: this.mget("run_id") }
-	}
-
-	async markFailed(reason: string) {
-		this.mset("state", "failed")
-		this.mset("failure_reason", reason)
 	}
 
 	/* -------------------------------------------------------------- control */
@@ -313,7 +192,7 @@ export class EnvDO extends DurableObject {
 		disk_free_mb: number | null
 		running: any[]
 		agent_version?: string
-	}): Promise<{ ttl_expires_at: number; destroy: boolean; actions: any[] }> {
+	}): Promise<{ actions: any[] }> {
 		this.init()
 		this.mset("last_seen_at", Date.now())
 		if (body.disk_free_mb !== null && body.disk_free_mb !== undefined) {
@@ -342,12 +221,7 @@ export class EnvDO extends DurableObject {
 
 		const actions = this.actions
 		this.actions = []
-		const state = this.mget("state")
-		return {
-			ttl_expires_at: this.mnum("ttl_expires_at", Date.now())!,
-			destroy: state === "destroying" || state === "expired",
-			actions,
-		}
+		return { actions }
 	}
 
 	async pushAction(action: any): Promise<void> {
@@ -355,7 +229,7 @@ export class EnvDO extends DurableObject {
 	}
 
 	async hasActions(): Promise<boolean> {
-		return this.actions.length > 0 || this.mget("state") === "destroying"
+		return this.actions.length > 0
 	}
 
 	/* ---------------------------------------------------------------- queue */
@@ -613,7 +487,7 @@ export class EnvDO extends DurableObject {
 	}
 
 	private gcPulls() {
-		const cutoff = Date.now() - PULL_TTL_MS
+		const cutoff = Date.now() - PULL_CACHE_MAX_AGE_MS
 		for (const [k, v] of this.pulls) if (v.at < cutoff) this.pulls.delete(k)
 	}
 
@@ -689,12 +563,4 @@ export class EnvDO extends DurableObject {
 		return buildSnapshot(this.sql, verbose)
 	}
 
-	async liveness(): Promise<{ state: string; last_seen_ms_ago: number | null; run_id: string | null }> {
-		const lastSeen = this.mnum("last_seen_at", null)
-		return {
-			state: this.mget("state") || "lost",
-			last_seen_ms_ago: lastSeen === null ? null : Date.now() - lastSeen,
-			run_id: this.mget("run_id"),
-		}
-	}
 }

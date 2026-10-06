@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server"
 import type { ZodTypeAny } from "zod"
 
-export const SERVER_INFO = { name: "desktop-mcp-host", version: "0.1.0" }
+export const SERVER_INFO = { name: "desktop-mcp-host", version: "0.2.0" }
 
 /** How often to send notifications/progress while a tool is still working. */
 export const PROGRESS_INTERVAL_MS = 5_000

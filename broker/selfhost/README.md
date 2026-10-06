@@ -1,16 +1,26 @@
 # Self-hosted broker
 
-The self-hosted broker is the default runtime for persistent local agents.
+This is the Node + SQLite runtime used by the Docker image.
 
-    cd ../..
-    cp .env.example .env
-    # Fill in PUBLIC_URL, BROKER_SECRET and MCP_AUTH_TOKEN.
-    docker compose -f compose.yaml -f compose.build.yaml up -d --build --wait
+Required environment variables:
+- MCP_AUTH_TOKEN
+- BROKER_SECRET
 
-No GitHub PAT, GitHub repository or Actions runner is required.
+Common optional settings:
+- HOST
+- PORT
+- DATA_DIR
+- PUBLIC_URL
+- ALLOWED_HOSTS
+- AGENT_WAIT_SECONDS
+- EXEC_WORKERS
+- MAX_OUTPUT_BYTES
 
-The broker uses Node.js 24 and native SQLite. Device/job state survives broker
-restarts in the broker data volume, while the MCP HTTP layer itself is
-stateless.
+There are no TTL or lease settings. Local host agents self-register and keep
+reconnecting while their foreground npx process is running.
 
-See LOCAL_AGENT.md at the repository root for installing agents on computers.
+Build and test:
+
+    npm ci
+    npm run build
+    npm test

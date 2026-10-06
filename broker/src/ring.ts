@@ -22,7 +22,7 @@ export const RING_MAX = 512 * 1024
 /**
  * How much of the tail is persisted when a command reaches a terminal state.
  *
- * The ring dies with the isolate, and a runner whose lease has expired cannot
+ * The ring dies with the isolate, and a host agent that is gone cannot
  * re-serve anything, so without this the exit code of a finished command would
  * outlive the output that explains it.
  */

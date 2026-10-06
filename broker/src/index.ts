@@ -49,7 +49,7 @@ export default {
 		const cfg = loadConfig(env as Record<string, unknown>)
 
 		if (url.pathname === "/healthz") {
-			return json({ ok: true, server: SERVER_INFO, mode: "persistent-local-agent" })
+			return json({ ok: true, server: SERVER_INFO, mode: "local-host" })
 		}
 
 		/*
@@ -88,8 +88,6 @@ export default {
 			const action = agent[2]
 
 			if (action === "hello") {
-				const runId = request.headers.get("x-run-id") || ""
-				const runAttempt = request.headers.get("x-run-attempt") || "1"
 				const nonce = request.headers.get("x-nonce") || ""
 				const ts = Number(request.headers.get("x-ts") || "0")
 				const sig = request.headers.get("x-sig") || ""
@@ -99,7 +97,7 @@ export default {
 				if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > 300) {
 					return json({ ok: false, reason: "timestamp outside the +/-300s window" }, 401)
 				}
-				const expect = await hmacHex(secret, [envId, runId, runAttempt, nonce, String(ts)].join("\n"))
+				const expect = await hmacHex(secret, [envId, nonce, String(ts)].join("\n"))
 				if (!timingSafeEqual(sig, expect)) return json({ ok: false, reason: "bad signature" }, 401)
 
 				let facts: Record<string, unknown> = {}
@@ -113,30 +111,21 @@ export default {
 				// been verified. Otherwise arbitrary callers could create unbounded
 				// SQLite files by probing valid-looking device IDs.
 				const stub = env.ENV_DO.get(env.ENV_DO.idFromName(envId)) as any
-				const persistent = request.headers.get("x-agent-mode") === "persistent" || facts.persistent === true
 				const platform = platformOf(envId)
 				const deviceName =
 					typeof facts.device_name === "string" && facts.device_name.trim()
 						? facts.device_name.trim().slice(0, 128)
 						: envId
 
-				if (persistent) {
-					await stub.provisionPersistent({ envId, platform, label: deviceName })
-				}
+				await stub.provisionHost({ envId, platform, label: deviceName })
 
 				const r = await stub.enroll({
-					runId,
-					runAttempt,
 					facts,
 					execWorkers: cfg.execWorkers,
-					unreachableLimitSeconds: cfg.unreachableLimitSeconds,
 					redact: [],
-					persistent,
 				})
 				if (!r.ok) return json(r, 409)
-				if (persistent) {
-					await guard(env).registerDevice({ envId, name: deviceName, platform, metadata: facts })
-				}
+				await guard(env).registerDevice({ envId, name: deviceName, platform, metadata: facts })
 				return json(r)
 			}
 
@@ -152,12 +141,10 @@ export default {
 				} catch {
 					body = {}
 				}
-				// Renew the lease and drain immediately, then park. The hanging request
-				// is held HERE, in a stateless Worker, never inside the Durable Object:
-				// a 50s await inside the DO would sit in front of its input gate and
-				// stall every other command for that environment.
+				// Drain actions immediately, then park. The hanging request is held
+				// here in the stateless frontend, never inside the Durable Object.
 				const first = await stub.controlPoll(body)
-				if (first.destroy || first.actions.length) return json(first)
+				if (first.actions.length) return json(first)
 
 				const waitS = Math.min(cfg.agentWaitSeconds, Math.max(1, Number(body.wait) || cfg.agentWaitSeconds))
 
@@ -176,11 +163,7 @@ export default {
 					}
 				}
 
-				// The runner is gone (cancelled job, killed step, dead network). There
-				// is nobody to read a response, so the closing round trip -- which
-				// exists to renew the lease and drain the last window -- would be spent
-				// on nothing. Let the lease expire instead; that is what it is for.
-				if (dl.aborted) return json({ destroy: false, actions: [] })
+				if (dl.aborted) return json({ actions: [] })
 				return json(await stub.controlPoll(body))
 			}
 

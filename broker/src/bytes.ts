@@ -207,9 +207,8 @@ export function stripAnsi(s: string): string {
  *
  * Longest first, so a secret that contains another secret is masked whole.
  * Values shorter than 8 characters are ignored: masking those turns ordinary
- * build output into a field of asterisks, and GitHub's own `::add-mask::` is
- * not available to us anyway (actions/runner#643 -- it does not apply to
- * workflow_dispatch inputs).
+ * build output into a field of asterisks. Redaction is performed here before
+ * output is returned to the MCP caller.
  */
 export function makeRedactor(secrets: string[]): (s: string) => string {
 	const list = [...new Set(secrets.filter((v) => typeof v === "string" && v.length >= 8))].sort(

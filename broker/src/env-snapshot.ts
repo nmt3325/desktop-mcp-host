@@ -1,4 +1,4 @@
-import { mget, mnum, type EnvState, type Sql } from "./env-schema"
+import { mget, mnum, type Sql } from "./env-schema"
 
 export function queueDepth(sql: Sql): number {
 	const rows = sql.exec(`SELECT COUNT(*) AS c FROM queue`).toArray()
@@ -15,10 +15,7 @@ const DISK_LOW_MB = 2048
  * Read-only over the tables, so it can be exercised directly in tests.
  */
 export function buildSnapshot(sql: Sql, verbose: boolean): Record<string, unknown> {
-	const persistent = mget(sql, "persistent") === "1"
-	const ttl = mnum(sql, "ttl_expires_at", 0)!
-	let state = (mget(sql, "state") || "lost") as EnvState
-	if (!persistent && state === "ready" && Date.now() > ttl) state = "expired"
+	const state = mget(sql, "state") || "lost"
 
 	// Byte-capped, newest first. A count cap lets one row with a long label blow
 	// the response budget, which is the resource that is actually scarce.
@@ -63,12 +60,6 @@ export function buildSnapshot(sql: Sql, verbose: boolean): Record<string, unknow
 		platform: mget(sql, "platform"),
 		state,
 		label: mget(sql, "label"),
-		run_url: mget(sql, "run_url"),
-		run_id: mget(sql, "run_id"),
-		created_by: mget(sql, "created_by"),
-		persistent,
-		expires_at: persistent ? null : ttl,
-		ttl_remaining_s: persistent ? null : Math.max(0, Math.floor((ttl - Date.now()) / 1000)),
 		sticky_cwd: mget(sql, "sticky_cwd"),
 		overlay_version: mnum(sql, "overlay_version", 0),
 		queue_depth: queueDepth(sql),

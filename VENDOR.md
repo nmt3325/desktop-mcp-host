@@ -1,6 +1,6 @@
 # VENDOR / 出典台帳 (runner)
 
-> **Historical provenance note:** References below to GitHub Actions describe the project origin and upstream code provenance. The current runtime uses persistent local computer agents and does not provision GitHub Actions runners.
+> **Historical provenance note:** References below to GitHub Actions describe the project origin and upstream code provenance. The current runtime uses local computer agents and does not provision GitHub Actions runners.
 
 
 > **重要**: 以前この台帳には `nmt3325/opencode-mcp-bridge` が移植元として記載されていました。

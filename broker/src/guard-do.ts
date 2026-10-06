@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers"
 
 /**
- * Persistent registry for local computer agents.
+ * Registry for local computer agents.
  *
  * Device/job execution state itself lives in EnvDO. This singleton only keeps
  * the discoverable list of computers and their last contact time.

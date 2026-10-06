@@ -19,8 +19,8 @@ function has(name) {
 function printHelp() {
   console.log(`desktop-mcp-host
 
-Run this computer as a temporary MCP-controlled device. Nothing is installed as
-a system service; Ctrl+C disconnects the device.
+Run this computer as a foreground MCP host. Nothing is installed as a system
+service; Ctrl+C disconnects the host.
 
 Usage:
   desktop-mcp-host connect [options]
@@ -32,7 +32,7 @@ Options:
   --secret <secret>       Agent enrollment secret
   --secret-file <path>    Read the enrollment secret from a file
   --name <name>           Display name for this computer
-  --device-id <id>        Override the stable derived device id
+  --env-id <id>           Override the stable derived env_id
   --workers <1-8>         Parallel command workers (default: 4)
   --root <path>           Local working/state directory
   --wait <5-55>           Long-poll duration in seconds
@@ -62,7 +62,7 @@ if (!internalRole) {
     process.exit(0)
   }
   if (has("--version") || has("-v")) {
-    console.log("0.1.0")
+    console.log("0.2.0")
     process.exit(0)
   }
 
@@ -91,15 +91,14 @@ if (!internalRole) {
 
   process.env.BROKER_URL = broker
   process.env.BROKER_SECRET = secret
-  process.env.DESKTOP_MCP_PERSISTENT = "1"
 
   const name = valueOf("--name")
-  const deviceId = valueOf("--device-id")
+  const envId = valueOf("--env-id")
   const workers = valueOf("--workers")
   const root = valueOf("--root")
   const wait = valueOf("--wait")
   if (name) process.env.DESKTOP_MCP_DEVICE_NAME = name
-  if (deviceId) process.env.DESKTOP_MCP_ENV_ID = deviceId
+  if (envId) process.env.DESKTOP_MCP_ENV_ID = envId
   if (workers) process.env.DESKTOP_MCP_EXEC_WORKERS = workers
   if (root) process.env.DESKTOP_MCP_ROOT = root
   if (wait) process.env.DESKTOP_MCP_WAIT_SECONDS = wait

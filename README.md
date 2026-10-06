@@ -1,107 +1,83 @@
 # desktop-mcp-host
 
-A separate MCP host for controlling your own Linux, macOS and Windows computers
-from ChatGPT, Claude, Notion and other MCP clients.
+A self-hosted MCP broker plus a lightweight foreground agent for controlling
+your own Linux, macOS and Windows computers.
 
-It is derived from the durable execution model that worked in gha-mcp-host, but
-it is a different tool: it does not provision or use GitHub Actions runners.
+It reuses the durable execution model from gha-mcp-host, but it does not use
+GitHub Actions runners.
 
-Architecture:
-
-    AI clients -- stateless MCP --> broker <-- outbound long-poll -- npx agent on your PC
+    AI clients -- stateless MCP --> broker <-- outbound long-poll -- npx agent
                                    |
-                                   +-- durable device/job state
+                                   +-- durable host/job state
                                    +-- resumable output
                                    +-- no long-lived MCP session table
 
-## Why
-
-The MCP frontend is stateless. Clients may initialize repeatedly without filling
-a server-side MCP session map.
-
-The computer agent is intentionally foreground-first. It is not installed as a
-system service. Start it when you want the computer controllable and press
-Ctrl+C to disconnect it.
-
-One foreground agent process manages the same bounded worker model inherited from
-gha-mcp-host, so multiple AI agents can orchestrate the same computer without
-starting one host process per AI client.
-
 ## Quick start
 
-### 1. Run the broker
+Broker:
 
     cp .env.example .env
     # Set PUBLIC_URL, BROKER_SECRET and MCP_AUTH_TOKEN.
     docker compose up -d
 
-The MCP endpoint is:
-
-    https://your-host.example/mcp
-
-MCP clients authenticate with MCP_AUTH_TOKEN.
-
-### 2. Connect a computer with npx
-
-No clone and no global install are required:
+Agent:
 
     DESKTOP_MCP_BROKER_SECRET='your-agent-secret' \
     npx --yes github:nmt3325/desktop-mcp-host \
       connect --broker https://your-host.example --name my-pc
 
-Stop it with Ctrl+C.
+Press Ctrl+C to stop the host agent.
 
-After an npm release, the shorter form is:
+## MCP tools
 
-    DESKTOP_MCP_BROKER_SECRET='your-agent-secret' \
-    npx @nmt3325/desktop-mcp-host \
-      connect --broker https://your-host.example --name my-pc
+The MCP surface intentionally uses the native gha-mcp-style tools.
 
-For secrets you do not want in command-line arguments:
+Host discovery:
 
-    npx --yes github:nmt3325/desktop-mcp-host \
-      connect --broker https://your-host.example \
-      --secret-file ~/.config/desktop-mcp/secret \
-      --name my-pc
+- env_list
+- env_status
 
-### 3. Use it from MCP
+Execution:
 
-Call list_devices first. With exactly one online device, most Desktop
-Commander-style tools may omit deviceId.
+- execute
+- without_sandbox
+- start_command
+- poll_job
+- stop_job
 
-Desktop Commander-style tools include:
+Files:
 
-- list_devices, who_am_i, ping, get_config
-- start_process, read_process_output, force_terminate, list_sessions
-- read_file, write_file, list_directory
+- read_file
+- write_file
+- list_directory
+- get_image
+- get_file
 
-The native durable tool set is also available:
+There is no env_create, env_extend or env_destroy. Hosts self-register when the
+npx agent starts. There is no lease/TTL; a host is considered online from its
+recent agent heartbeat and becomes offline after the agent stops.
 
-- env_list, env_status
-- execute, start_command, poll_job, stop_job
-- get_image, get_file
+All execution and file tools use env_id from env_list.
 
 ## Concurrency
 
-One computer runs one foreground control agent. That agent starts a bounded
-worker pool; default 4 workers, configurable up to 8 with --workers.
+One computer runs one foreground control agent. It starts a bounded worker pool:
+4 workers by default, configurable up to 8 with --workers.
 
-Multiple MCP clients and AI agents can target the same device concurrently.
-MCP requests themselves are stateless; executable jobs are queued durably and
-claimed by the host workers.
-
-This is the same execution/queue model inherited from gha-mcp-host rather than
-the long-lived MCP-session model used by Desktop Commander Relay.
+Multiple MCP clients and AI agents can target the same env_id concurrently.
+Jobs are durably queued and claimed by the host workers. MCP itself remains
+stateless, so repeated client initialization does not create long-lived MCP
+server sessions.
 
 ## Repository layout
 
 - cli.mjs: npx entry point
-- agent.mjs, lib/: cross-platform foreground computer agent
-- broker/src/: stateless MCP frontend and durable device/job state
+- agent.mjs, lib/: cross-platform foreground host agent
+- broker/src/: stateless MCP frontend and durable host/job state
 - broker/selfhost/: Node + SQLite self-hosted broker
 - Dockerfile / compose.yaml: broker deployment
-- LOCAL_AGENT.md: npx agent details
+- LOCAL_AGENT.md: npx host-agent details
 - SELF_HOSTING.md: broker deployment
 
-GitHub Actions in this repository are only CI and image publication. They are
-not used as execution hosts.
+GitHub Actions in this repository are only CI and image publication; they are
+not execution hosts.

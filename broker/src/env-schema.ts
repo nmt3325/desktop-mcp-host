@@ -15,13 +15,7 @@ export type Sql = {
 	exec(query: string, ...bindings: any[]): { toArray(): any[] }
 }
 
-export type EnvState =
-	| "provisioning"
-	| "ready"
-	| "destroying"
-	| "expired"
-	| "failed"
-	| "lost"
+export type EnvState = "provisioning" | "ready" | "failed" | "lost"
 
 export type CmdState = "queued" | "running" | "exited" | "killed" | "lost"
 

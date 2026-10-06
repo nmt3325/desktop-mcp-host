@@ -43,7 +43,7 @@ import {
 	type ReadFileArgs,
 	type WriteFileArgs,
 } from "./schemas"
-import { type Bindings, envStub, guard, isTerminal, platformOf, sha256Hex, tryCall } from "./tools-shared"
+import { type Bindings, envStub, isTerminal, platformOf, sha256Hex, tryCall } from "./tools-shared"
 import { ensureReady, runCapture } from "./tools-run"
 
 /** Window we ask the DO for. The runner keeps its result JSON under this. */
@@ -57,15 +57,6 @@ const SHA256_EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78
 
 const RESULT_POLL_MIN_MS = 200
 const RESULT_POLL_MAX_MS = 2_000
-const DEVICE_ONLINE_MS = 120_000
-
-async function resolveTargetEnv(env: Bindings, args: { env_id?: string; deviceId?: string }): Promise<string | null> {
-	const explicit = args.env_id ?? args.deviceId
-	if (explicit) return explicit
-	const rows = await guard(env).listDevices()
-	const online = rows.filter((d: any) => Date.now() - Number(d.last_seen || 0) < DEVICE_ONLINE_MS)
-	return online.length === 1 ? String(online[0].env_id) : null
-}
 
 /**
  * Cap on an image, in base64 characters: ~1.5 MiB of binary.
@@ -421,11 +412,9 @@ export function buildFsTools(env: Bindings, cfg: BrokerConfig): ToolDef[] {
 		inputSchema: ReadFileInput,
 		readOnly: true,
 		async handler(args: ReadFileArgs, ctx) {
-			const envId = await resolveTargetEnv(env, args)
-			if (!envId) return fail("bad_input", "pass env_id/deviceId, or leave exactly one registered device online", { next_action: "list_devices" })
 			const r = await fileJob(
 				env,
-				envId,
+				args.env_id,
 				"read",
 				{
 					path: args.path,
@@ -453,8 +442,7 @@ export function buildFsTools(env: Bindings, cfg: BrokerConfig): ToolDef[] {
 			"Text only, and it replaces the whole file: for binary or for appending, use execute.",
 		inputSchema: WriteFileInput,
 		async handler(args: WriteFileArgs, ctx) {
-			const envId = await resolveTargetEnv(env, args)
-			if (!envId) return fail("bad_input", "pass env_id/deviceId, or leave exactly one registered device online", { next_action: "list_devices" })
+			const envId = args.env_id
 			const bytes = new TextEncoder().encode(args.content)
 			const contentB64 = b64encode(bytes)
 			if (contentB64.length > WRITE_MAX_B64) {
@@ -552,8 +540,7 @@ export function buildFsTools(env: Bindings, cfg: BrokerConfig): ToolDef[] {
 		inputSchema: ListDirectoryInput,
 		readOnly: true,
 		async handler(args: ListDirectoryArgs, ctx) {
-			const envId = await resolveTargetEnv(env, args)
-			if (!envId) return fail("bad_input", "pass env_id/deviceId, or leave exactly one registered device online", { next_action: "list_devices" })
+			const envId = args.env_id
 			const platform = platformOf(envId)
 			const deadlineMs = clamp(numArg(args.deadline_ms, 20000), 1000, 45000)
 
@@ -613,8 +600,7 @@ export function buildFsTools(env: Bindings, cfg: BrokerConfig): ToolDef[] {
 		inputSchema: GetImageInput,
 		readOnly: true,
 		async handler(args: GetImageArgs, ctx) {
-			const envId = await resolveTargetEnv(env, args)
-			if (!envId) return fail("bad_input", "pass env_id/deviceId, or leave exactly one registered device online", { next_action: "list_devices" })
+			const envId = args.env_id
 			const platform = platformOf(envId)
 			const deadlineMs = clamp(numArg(args.deadline_ms, 30000), 1000, 45000)
 
@@ -716,8 +702,7 @@ export function buildFsTools(env: Bindings, cfg: BrokerConfig): ToolDef[] {
 		inputSchema: GetFileInput,
 		readOnly: true,
 		async handler(args: GetFileArgs, ctx) {
-			const envId = await resolveTargetEnv(env, args)
-			if (!envId) return fail("bad_input", "pass env_id/deviceId, or leave exactly one registered device online", { next_action: "list_devices" })
+			const envId = args.env_id
 			const platform = platformOf(envId)
 			const deadlineMs = clamp(numArg(args.deadline_ms, 30000), 1000, 45000)
 
@@ -780,7 +765,7 @@ export function buildFsTools(env: Bindings, cfg: BrokerConfig): ToolDef[] {
 			const fileName = args.file_name || fileNameFromPath(args.path)
 			const mime = args.mime_type || sniffFileMime(raw, fileName)
 			const sha256 = await sha256Bytes(raw)
-			const uri = `desktop-mcp://file/${encodeURIComponent(envId)}/${encodeURIComponent(fileName)}`
+			const uri = `gha-mcp://file/${encodeURIComponent(envId)}/${encodeURIComponent(fileName)}`
 
 			return ok(
 				{
